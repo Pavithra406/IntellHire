@@ -1,4 +1,5 @@
 import os
+import re
 import json
 import PyPDF2
 import docx
@@ -13,17 +14,19 @@ from app.agents.gemini_client import generate_json
 
 
 EXTRACT_PROMPT = """
-Extract structured information from this resume text.
+You are a resume parser. Extract ALL skills mentioned in this resume — technical skills,
+programming languages, frameworks, tools, databases, cloud platforms, soft skills, etc.
+Be thorough and do not miss any skill.
 
 RESUME TEXT:
 {resume_text}
 
-Return JSON:
+Return ONLY a valid JSON object with these exact keys:
 {{
-  "name": "<full name>",
-  "email": "<email>",
-  "phone": "<phone number>",
-  "skills": ["<skill1>", "<skill2>"],
+  "name": "<full name or empty string>",
+  "email": "<email or empty string>",
+  "phone": "<phone number or empty string>",
+  "skills": ["skill1", "skill2", "skill3"],
   "experience": [
     {{"company": "<company>", "role": "<role>", "duration": "<duration>", "description": "<brief>"}}
   ],
@@ -31,11 +34,103 @@ Return JSON:
     {{"degree": "<degree>", "institution": "<institution>", "year": "<year>"}}
   ],
   "projects": [
-    {{"name": "<project>", "description": "<description>", "technologies": ["<tech>"]}}
+    {{"name": "<project>", "description": "<description>", "technologies": ["tech1", "tech2"]}}
   ],
-  "certifications": ["<cert1>", "<cert2>"]
+  "certifications": ["cert1", "cert2"]
 }}
+
+Make sure "skills" is a non-empty array containing every technology, language, tool and skill found in the resume.
 """
+
+
+def _normalize_skills(value) -> list[str]:
+    if isinstance(value, str):
+        value = re.split(r"[,;\n|/]+", value)
+    if not isinstance(value, list):
+        return []
+
+    seen = set()
+    skills = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        skill = re.sub(r"\s+", " ", item).strip(" -:*.\t\r\n")
+        if not skill:
+            continue
+        key = skill.casefold()
+        if key not in seen:
+            seen.add(key)
+            skills.append(skill)
+    return skills
+
+
+def _extract_section_skills(text: str) -> list[str]:
+    section_match = re.search(
+        r"(?is)(?:technical\s+skills|skills|technologies|tools)\s*[:\n-]+(.{0,1200}?)(?=\n\s*(?:experience|work\s+experience|education|projects|certifications|summary|objective)\b|$)",
+        text,
+    )
+    if not section_match:
+        return []
+
+    section_text = section_match.group(1)
+    candidates = re.split(r"[,;\n|]+", section_text)
+    skills = []
+    for candidate in candidates:
+        cleaned = re.sub(r"^[\s\-*]+", "", candidate).strip()
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" -:*.")
+        if 1 <= len(cleaned) <= 40 and not re.search(r"\b(responsible|experience|worked|developed)\b", cleaned, re.I):
+            skills.append(cleaned)
+    return _normalize_skills(skills)
+
+
+def _extract_skills_from_text(text: str) -> list[str]:
+    """
+    Regex-based fallback skill extractor used when the AI call fails.
+    Scans sections and common tech keywords so we avoid returning an empty list.
+    """
+    known_skills = [
+        # Languages
+        "Python", "Java", "JavaScript", "TypeScript", "C", "C++", "C#", "Go",
+        "Ruby", "PHP", "Swift", "Kotlin", "Rust", "Scala", "R", "MATLAB",
+        "Perl", "Shell", "Bash", "PowerShell",
+        # Web
+        "HTML", "CSS", "React", "Angular", "Vue", "Next.js", "Nuxt", "Svelte",
+        "Node.js", "Express", "FastAPI", "Django", "Flask", "Spring Boot",
+        "Spring", "Laravel", "Rails", "ASP.NET", "Tailwind", "Tailwind CSS",
+        "Bootstrap", "Redux", "Zustand", "Material UI", "Vite", "Webpack",
+        # Data / AI
+        "TensorFlow", "PyTorch", "Keras", "scikit-learn", "Pandas", "NumPy",
+        "Matplotlib", "Seaborn", "OpenCV", "NLP", "Machine Learning",
+        "Deep Learning", "Data Science", "LangChain", "Hugging Face",
+        # Databases
+        "MySQL", "PostgreSQL", "MongoDB", "SQLite", "Redis", "Cassandra",
+        "Oracle", "SQL Server", "DynamoDB", "Elasticsearch", "SQL", "NoSQL",
+        # Cloud / DevOps
+        "AWS", "Azure", "GCP", "Docker", "Kubernetes", "Terraform", "Ansible",
+        "CI/CD", "Jenkins", "GitHub Actions", "Linux", "Nginx", "Firebase",
+        "Supabase", "Vercel", "Render", "Netlify", "Heroku",
+        # Tools
+        "Git", "GitHub", "GitLab", "Bitbucket", "Jira", "Postman",
+        "VS Code", "IntelliJ", "Eclipse", "Tableau", "Power BI", "Excel",
+        "Figma", "Canva",
+        # Misc
+        "REST", "REST API", "REST APIs", "GraphQL", "gRPC", "API", "JSON",
+        "XML", "Microservices", "Agile", "Scrum", "OOP", "Data Structures",
+        "Algorithms", "Communication", "Leadership", "Problem Solving", "Teamwork",
+    ]
+    found = _extract_section_skills(text)
+    seen = {skill.casefold() for skill in found}
+    text_lower = text.lower()
+    for skill in known_skills:
+        pattern = r'\b' + re.escape(skill.lower()) + r'\b'
+        if re.search(pattern, text_lower) and skill.casefold() not in seen:
+            found.append(skill)
+            seen.add(skill.casefold())
+    return _normalize_skills(found)
+
+
+def extract_skills_from_resume_text(text: str) -> list[str]:
+    return _extract_skills_from_text(text or "")
 
 
 def extract_text_from_file(file_path: str) -> str:
@@ -122,24 +217,36 @@ class ResumeService:
             resume = self.resume_repo.create(candidate_id, file_path, file.filename)
 
         # Extract structured info with AI
+        extracted = {}
         try:
-            prompt = EXTRACT_PROMPT.format(resume_text=raw_text[:4000])
+            prompt = EXTRACT_PROMPT.format(resume_text=raw_text[:5000])
             raw_json = generate_json(prompt)
             extracted = json.loads(raw_json)
-            self.resume_repo.update_extracted(resume.id, {
-                "extracted_name": extracted.get("name"),
-                "extracted_email": extracted.get("email"),
-                "extracted_phone": extracted.get("phone"),
-                "extracted_skills": extracted.get("skills", []),
-                "extracted_experience": extracted.get("experience", []),
-                "extracted_education": extracted.get("education", []),
-                "extracted_projects": extracted.get("projects", []),
-                "extracted_certifications": extracted.get("certifications", []),
-                "raw_text": raw_text
-            })
+            extracted["skills"] = _normalize_skills(extracted.get("skills", []))
         except Exception as e:
-            print(f"Extraction error: {e}")
-            extracted = {"skills": []}
+            print(f"[ResumeService] AI extraction error: {e}")
+            extracted = {}
+
+        # If AI returned no skills, fall back to regex extraction
+        ai_skills = extracted.get("skills", [])
+        if not ai_skills:
+            print("[ResumeService] AI returned no skills — using regex fallback")
+            ai_skills = _extract_skills_from_text(raw_text)
+            extracted["skills"] = ai_skills
+
+        # Persist extracted fields (always update so re-uploads work correctly)
+        self.resume_repo.update_extracted(resume.id, {
+            "extracted_name": extracted.get("name") or None,
+            "extracted_email": extracted.get("email") or None,
+            "extracted_phone": extracted.get("phone") or None,
+            "extracted_skills": ai_skills,
+            "extracted_experience": extracted.get("experience", []),
+            "extracted_education": extracted.get("education", []),
+            "extracted_projects": extracted.get("projects", []),
+            "extracted_certifications": extracted.get("certifications", []),
+            "raw_text": raw_text,
+        })
+        print(f"[ResumeService] Extracted {len(ai_skills)} skills: {ai_skills[:10]}")
 
         # Run screening
         job = self.job_repo.get_by_id(candidate.job_id)

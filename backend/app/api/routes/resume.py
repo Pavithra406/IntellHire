@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, HTTPException
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_user, require_hr
-from app.services.resume_service import ResumeService
+from app.services.resume_service import ResumeService, extract_skills_from_resume_text
 from app.repositories.candidate_repository import CandidateRepository
 from app.repositories.resume_repository import ResumeRepository
 
@@ -36,9 +36,14 @@ def get_resume(candidate_id: int, db: Session = Depends(get_db), current_user=De
         if not candidate or candidate.id != candidate_id:
             raise HTTPException(403, "Access denied")
 
-    resume = ResumeRepository(db).get_by_candidate(candidate_id)
+    resume_repo = ResumeRepository(db)
+    resume = resume_repo.get_by_candidate(candidate_id)
     if not resume:
         raise HTTPException(404, "Resume not found")
+    if not resume.extracted_skills and resume.raw_text:
+        skills = extract_skills_from_resume_text(resume.raw_text)
+        if skills:
+            resume = resume_repo.update_extracted(resume.id, {"extracted_skills": skills})
 
     return {
         "id": resume.id,
