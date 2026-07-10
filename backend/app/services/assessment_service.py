@@ -28,20 +28,7 @@ class AssessmentService:
         # Check HR question bank first
         hr_questions = self._get_from_question_bank(candidate_id, assessment_type)
 
-        if hr_questions:
-            questions = hr_questions
-        else:
-            # AI-generated with fixed counts
-            if assessment_type == "aptitude":
-                questions = self.generator.generate_aptitude(5)
-            elif assessment_type == "sql":
-                mcqs = self.generator.generate_sql_mcq(5)
-                queries = self.generator.generate_sql_queries(2)
-                questions = mcqs + queries
-            elif assessment_type == "coding":
-                questions = self.generator.generate_coding(2)
-            else:
-                raise HTTPException(400, "Invalid assessment type")
+        questions = self._build_questions(assessment_type, hr_questions)
 
         saved_questions = []
         for q in questions:
@@ -62,6 +49,46 @@ class AssessmentService:
 
         self.assess_repo.start(assessment.id)
         return {"assessment_id": assessment.id, "questions": saved_questions}
+
+    def ensure_questions(self, assessment_id: int) -> list:
+        assessment = self.assess_repo.get_by_id(assessment_id)
+        if not assessment:
+            raise HTTPException(404, "Assessment not found")
+
+        if assessment.questions:
+            return assessment.questions
+
+        questions = self._build_questions(assessment.assessment_type, [])
+        saved_questions = []
+        for q in questions:
+            saved_questions.append(self.assess_repo.add_question(assessment.id, {
+                "question_text": q.get("question_text", ""),
+                "question_type": q.get("question_type", "mcq"),
+                "options": q.get("options"),
+                "correct_answer": q.get("correct_answer"),
+                "marks": q.get("marks", 1.0)
+            }))
+        return saved_questions
+
+    def _build_questions(self, assessment_type: str, hr_questions: list) -> list:
+        if assessment_type == "aptitude":
+            questions = hr_questions or self.generator.generate_aptitude(5)
+            return questions or self.generator.generate_aptitude(5)
+
+        if assessment_type == "sql":
+            mcqs = [q for q in hr_questions if q.get("question_type") == "mcq"]
+            queries = [q for q in hr_questions if q.get("question_type") == "sql_write"]
+            if len(mcqs) < 5:
+                mcqs.extend(self.generator.generate_sql_mcq(5 - len(mcqs)))
+            if len(queries) < 2:
+                queries.extend(self.generator.generate_sql_queries(2 - len(queries)))
+            return mcqs[:5] + queries[:2]
+
+        if assessment_type == "coding":
+            questions = hr_questions or self.generator.generate_coding(2)
+            return questions[:2] if questions else self.generator.generate_coding(2)
+
+        raise HTTPException(400, "Invalid assessment type")
 
     def _get_from_question_bank(self, candidate_id: int, assessment_type: str) -> list:
         """Pull questions from HR-uploaded PDF question bank."""

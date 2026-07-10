@@ -82,6 +82,10 @@ def get_assessment(assessment_id: int, db: Session = Depends(get_db),
         if not candidate or assessment.candidate_id != candidate.id:
             raise HTTPException(403, "Access denied")
 
+    if not assessment.questions:
+        AssessmentService(db).ensure_questions(assessment.id)
+        assessment = AssessmentRepository(db).get_by_id(assessment_id)
+
     questions = []
     for q in assessment.questions:
         qdata = {

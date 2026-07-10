@@ -382,7 +382,7 @@ const Assessments: React.FC = () => {
       </div>
       <div className="space-y-4">
         {Object.entries(typeConfig).map(([type, cfg]) => {
-          const done = assessments.find(a => a.type === type);
+          const done = assessments.find(a => a.type === type && ['completed', 'passed', 'failed'].includes(a.status));
           const isActive = candidateStatus === cfg.status;
           return (
             <div key={type} className="bg-gray-900 border border-gray-800 rounded-xl p-5">
