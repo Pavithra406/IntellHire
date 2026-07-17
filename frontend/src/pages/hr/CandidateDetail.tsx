@@ -14,7 +14,7 @@ const CandidateDetail: React.FC = () => {
   const [violations, setViolations] = useState<any>(null);
   const [activeTab, setActiveTab] = useState('overview');
   const [loading, setLoading] = useState(true);
-  const [actionLoading, setActionLoading] = useState(false);
+  const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [notes, setNotes] = useState('');
 
   const load = async () => {
@@ -25,10 +25,11 @@ const CandidateDetail: React.FC = () => {
         api.get(`/proctoring/violations/${id}`).catch(() => ({ data: null })),
       ]);
       setCandidate(cr.data);
+      setNotes(cr.data?.hr_notes || '');
       setInterview(ir.data);
       setViolations(vr.data);
-    } catch {
-      toast.error('Failed to load candidate');
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || 'Failed to load candidate');
     } finally {
       setLoading(false);
     }
@@ -37,24 +38,29 @@ const CandidateDetail: React.FC = () => {
   useEffect(() => { load(); }, [id]);
 
   const handleAction = async (action: string) => {
-    setActionLoading(true);
+    setActionLoading(action);
     try {
       await api.patch(`/candidates/${id}/status`, { status: action, hr_notes: notes });
-      toast.success(`Candidate ${action}`);
-      load();
-    } catch {
-      toast.error('Action failed');
+      toast.success(`Candidate status updated`);
+      await load();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || 'Action failed');
     } finally {
-      setActionLoading(false);
+      setActionLoading(null);
     }
   };
 
   const handleComputeRanking = async () => {
+    setActionLoading('ranking');
     try {
       await api.post(`/ranking/compute/${id}`);
       toast.success('Ranking computed');
-      load();
-    } catch { toast.error('Failed'); }
+      await load();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || 'Failed to compute ranking');
+    } finally {
+      setActionLoading(null);
+    }
   };
 
   if (loading) return <div className="flex items-center justify-center h-64"><div className="animate-spin w-8 h-8 border-2 border-violet-500 border-t-transparent rounded-full" /></div>;
@@ -136,14 +142,14 @@ const CandidateDetail: React.FC = () => {
                   { action: 'rejected', label: 'Reject', cls: 'bg-red-600 hover:bg-red-700' },
                   { action: 'interview_pending', label: 'Schedule Interview', cls: 'bg-purple-600 hover:bg-purple-700' },
                 ].map(btn => (
-                  <button key={btn.action} onClick={() => handleAction(btn.action)} disabled={actionLoading}
+                  <button key={btn.action} type="button" onClick={() => handleAction(btn.action)} disabled={!!actionLoading}
                     className={`${btn.cls} text-white px-4 py-2 rounded-lg text-sm font-medium transition disabled:opacity-50`}>
-                    {btn.label}
+                    {actionLoading === btn.action ? 'Saving...' : btn.label}
                   </button>
                 ))}
-                <button onClick={handleComputeRanking}
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition">
-                  Compute Ranking
+                <button type="button" onClick={handleComputeRanking} disabled={!!actionLoading}
+                  className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition disabled:opacity-50">
+                  {actionLoading === 'ranking' ? 'Computing...' : 'Compute Ranking'}
                 </button>
               </div>
             </div>
@@ -335,9 +341,9 @@ const CandidateDetail: React.FC = () => {
           ) : (
             <div className="text-center py-20">
               <p className="text-gray-500 mb-4">Ranking not computed yet</p>
-              <button onClick={handleComputeRanking}
-                className="bg-violet-600 hover:bg-violet-700 text-white px-6 py-2 rounded-lg text-sm font-medium">
-                Compute Now
+              <button type="button" onClick={handleComputeRanking} disabled={!!actionLoading}
+                className="bg-violet-600 hover:bg-violet-700 text-white px-6 py-2 rounded-lg text-sm font-medium disabled:opacity-50">
+                {actionLoading === 'ranking' ? 'Computing...' : 'Compute Now'}
               </button>
             </div>
           )}

@@ -1,7 +1,7 @@
 import axios from 'axios';
 
-// When served from the same domain, use relative URL
-// When running locally, use localhost
+// Production builds served by the backend should use the same-origin API.
+// Local Vite can still point at a separate backend with VITE_API_URL.
 const BASE_URL = import.meta.env.VITE_API_URL || '/api';
 
 const api = axios.create({
