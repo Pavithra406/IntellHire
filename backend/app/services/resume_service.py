@@ -52,6 +52,21 @@ def _normalize_skills(value) -> list[str]:
     seen = set()
     skills = []
     for item in value:
+        if isinstance(item, dict):
+            for nested_value in item.values():
+                for skill in _normalize_skills(nested_value):
+                    key = skill.casefold()
+                    if key not in seen:
+                        seen.add(key)
+                        skills.append(skill)
+            continue
+        if isinstance(item, list):
+            for skill in _normalize_skills(item):
+                key = skill.casefold()
+                if key not in seen:
+                    seen.add(key)
+                    skills.append(skill)
+            continue
         if not isinstance(item, str):
             continue
         skill = re.sub(r"\s+", " ", item).strip(" -:*.\t\r\n")
@@ -72,7 +87,11 @@ def _extract_section_skills(text: str) -> list[str]:
     if not section_match:
         return []
 
-    section_text = section_match.group(1)
+    section_text = re.sub(
+        r"(?im)^\s*(?:languages?|programming|frameworks?|libraries|databases?|cloud|tools?|platforms?|technologies|soft\s+skills?)\s*:\s*",
+        "",
+        section_match.group(1),
+    )
     candidates = re.split(r"[,;\n|]+", section_text)
     skills = []
     for candidate in candidates:
@@ -81,6 +100,18 @@ def _extract_section_skills(text: str) -> list[str]:
         if 1 <= len(cleaned) <= 40 and not re.search(r"\b(responsible|experience|worked|developed)\b", cleaned, re.I):
             skills.append(cleaned)
     return _normalize_skills(skills)
+
+
+def _extract_labeled_skills(text: str) -> list[str]:
+    label_pattern = re.compile(
+        r"(?im)^\s*(?:[-*]\s*)?"
+        r"(?:technical\s+skills|skills|technologies|tools|programming\s+languages|languages|frameworks|libraries|databases|cloud|platforms|soft\s+skills)"
+        r"\s*:\s*(.+)$"
+    )
+    found = []
+    for match in label_pattern.finditer(text):
+        found.extend(re.split(r"[,;|/]+", match.group(1)))
+    return _normalize_skills(found)
 
 
 def _extract_skills_from_text(text: str) -> list[str]:
@@ -118,7 +149,7 @@ def _extract_skills_from_text(text: str) -> list[str]:
         "XML", "Microservices", "Agile", "Scrum", "OOP", "Data Structures",
         "Algorithms", "Communication", "Leadership", "Problem Solving", "Teamwork",
     ]
-    found = _extract_section_skills(text)
+    found = _normalize_skills([_extract_section_skills(text), _extract_labeled_skills(text)])
     seen = {skill.casefold() for skill in found}
     text_lower = text.lower()
     for skill in known_skills:
@@ -222,7 +253,12 @@ class ResumeService:
             prompt = EXTRACT_PROMPT.format(resume_text=raw_text[:5000])
             raw_json = generate_json(prompt)
             extracted = json.loads(raw_json)
-            extracted["skills"] = _normalize_skills(extracted.get("skills", []))
+            project_technologies = [
+                project.get("technologies", [])
+                for project in extracted.get("projects", [])
+                if isinstance(project, dict)
+            ]
+            extracted["skills"] = _normalize_skills([extracted.get("skills", []), project_technologies])
         except Exception as e:
             print(f"[ResumeService] AI extraction error: {e}")
             extracted = {}
